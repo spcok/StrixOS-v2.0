@@ -6,7 +6,7 @@ export interface PermissionDefinition {
 }
 
 export const APP_PERMISSIONS = {
-  // 1. Husbandry & Welfare (Item-by-item granular controls)
+  // 1. Husbandry & Welfare
   'husbandry:logs_view': {
     module: 'Husbandry & Welfare',
     label: 'View Daily Care Logs',
@@ -122,7 +122,7 @@ export const APP_PERMISSIONS = {
     description: 'Authorise, alter, and prescribe prescription medication courses',
   },
 
-  // 4. Operations, Logistics & Calendar (3-Tier Groundwork)
+  // 4. Operations, Logistics & Calendar
   'calendar:view_schedule': {
     module: 'Operations & Logistics',
     label: 'View Calendar Grid & Slots (Tier 3)',
@@ -273,7 +273,6 @@ export const APP_PERMISSIONS = {
 
 export type PermissionKey = keyof typeof APP_PERMISSIONS;
 
-// Module Grouping Helper for UI Rendering
 export const PERMISSIONS_BY_MODULE = Object.entries(APP_PERMISSIONS).reduce(
   (acc, [key, def]) => {
     if (!acc[def.module]) {

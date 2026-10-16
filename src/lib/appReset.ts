@@ -2,7 +2,7 @@
  * Completely purges all client-side storage, unregisters service workers,
  * deletes PWA asset caches, and forces a cache-busting reload from the server.
  */
-export async function hardResetApp() {
+export async function hardResetApp(): Promise<void> {
   try {
     // 1. Unregister all Service Workers
     if ('serviceWorker' in navigator) {
@@ -20,7 +20,7 @@ export async function hardResetApp() {
     localStorage.clear();
     sessionStorage.clear();
 
-    // 4. Clear IndexedDB databases (TanStack persister, Dexie, Supabase)
+    // 4. Clear IndexedDB databases (TanStack persister, Supabase)
     if (window.indexedDB && indexedDB.databases) {
       try {
         const databases = await indexedDB.databases();
@@ -56,7 +56,8 @@ export async function hardResetApp() {
     window.location.replace(cleanUrl);
   } catch (error) {
     console.error('Error performing hard reset:', error);
-    // Fallback: reload anyway
     window.location.reload();
   }
 }
+
+export const executeAppReset = hardResetApp;
