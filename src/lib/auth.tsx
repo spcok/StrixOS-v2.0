@@ -19,6 +19,7 @@ const HEARTBEAT_STORAGE_KEY = 'strixos_last_auth_heartbeat';
 const HEARTBEAT_CHECK_INTERVAL_MS = 60 * 1000;
 const AUTH_SESSION_KEY = 'strix-auth-session';
 const LOCK_STORAGE_KEY = 'strix-is-locked';
+const LOCAL_UI_PREFS_KEY = 'strix-device-ui-preferences';
 
 export interface UIPreferences {
   scale: '95%' | '100%' | '105%' | '110%' | '115%' | '125%';
@@ -35,6 +36,29 @@ export const DEFAULT_UI_PREFERENCES: UIPreferences = {
   overlayOpacity: 20,
   focusMode: false,
 };
+
+function readLocalUIPreferences(userId?: string | null): UIPreferences {
+  try {
+    const key = userId ? `${LOCAL_UI_PREFS_KEY}:${userId}` : LOCAL_UI_PREFS_KEY;
+    const raw = localStorage.getItem(key) || localStorage.getItem(LOCAL_UI_PREFS_KEY);
+    if (!raw) return DEFAULT_UI_PREFERENCES;
+    return { ...DEFAULT_UI_PREFERENCES, ...JSON.parse(raw) };
+  } catch {
+    return DEFAULT_UI_PREFERENCES;
+  }
+}
+
+function writeLocalUIPreferences(prefs: UIPreferences, userId?: string | null): void {
+  try {
+    const serialized = JSON.stringify(prefs);
+    localStorage.setItem(LOCAL_UI_PREFS_KEY, serialized);
+    if (userId) {
+      localStorage.setItem(`${LOCAL_UI_PREFS_KEY}:${userId}`, serialized);
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+}
 
 export interface UserProfile {
   id: string;
@@ -61,6 +85,7 @@ interface AuthContextType {
   hasPermission: (permission: string | string[], showToastOnDenied?: boolean) => boolean;
   checkAccess: (allowedRoles: string[]) => boolean;
   updateUIPreferences: (partial: Partial<UIPreferences>) => Promise<void>;
+  resetUIPreferences: () => Promise<void>;
   lockSession: () => void;
   unlockWithPin: (pinCode: string) => boolean;
   unlockWithBiometrics: () => Promise<boolean>;
@@ -178,7 +203,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLocked, setIsLocked] = useState<boolean>(() => {
     return localStorage.getItem(LOCK_STORAGE_KEY) === 'true';
   });
-  const [uiPreferences, setUiPreferences] = useState<UIPreferences>(DEFAULT_UI_PREFERENCES);
+  const [uiPreferences, setUiPreferences] = useState<UIPreferences>(() =>
+    readLocalUIPreferences()
+  );
 
   const logout = useCallback(
     async (isExpired = false) => {
@@ -243,6 +270,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setSession(activeSession ?? null);
           setUser(activeSession?.user ?? null);
           if (activeSession?.user) {
+            setUiPreferences(readLocalUIPreferences(activeSession.user.id));
             evaluateSecurityHeartbeat();
           }
         }
@@ -261,6 +289,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (newSession?.user) {
         setSession(newSession);
         setUser(newSession.user);
+        setUiPreferences(readLocalUIPreferences(newSession.user.id));
         await set(AUTH_SESSION_KEY, newSession);
         localStorage.setItem(HEARTBEAT_STORAGE_KEY, Date.now().toString());
       } else if (event === 'SIGNED_OUT') {
@@ -308,16 +337,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     getPermissionsQueryOptions(profile?.role, user?.id)
   );
 
-  // Sync user's personal Accessibility Preferences to DOM
+  // Sync user's personal Accessibility Preferences from Supabase + Local Device Storage
   useEffect(() => {
     if (profile?.ui_preferences) {
-      setUiPreferences({
+      const merged: UIPreferences = {
         ...DEFAULT_UI_PREFERENCES,
         ...profile.ui_preferences,
-      });
+      };
+      setUiPreferences(merged);
+      writeLocalUIPreferences(merged, user?.id);
     }
-  }, [profile?.ui_preferences]);
+  }, [profile?.ui_preferences, user?.id]);
 
+  // Apply active UI Preferences to HTML Root Variables in 0ms
   useEffect(() => {
     const html = document.documentElement;
     html.style.setProperty('--app-scale', uiPreferences.scale || '100%');
@@ -339,19 +371,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (partial: Partial<UIPreferences>) => {
       const updated: UIPreferences = { ...uiPreferences, ...partial };
       setUiPreferences(updated);
+      writeLocalUIPreferences(updated, user?.id);
 
       if (user?.id) {
-        await supabase
+        const { error } = await supabase
           .from('users')
           .update({ ui_preferences: updated })
           .eq('id', user.id);
-        queryClient.invalidateQueries({ queryKey: ['userProfile', user.id] });
+
+        if (!error) {
+          queryClient.invalidateQueries({ queryKey: ['userProfile', user.id] });
+        }
       }
     },
     [uiPreferences, user?.id, queryClient]
   );
 
-  // 5-Minute Idle Soft-Lock Timer (Only activates if the user has a PIN or Biometrics set)
+  const resetUIPreferences = useCallback(async () => {
+    setUiPreferences(DEFAULT_UI_PREFERENCES);
+    writeLocalUIPreferences(DEFAULT_UI_PREFERENCES, user?.id);
+
+    if (user?.id) {
+      await supabase
+        .from('users')
+        .update({ ui_preferences: DEFAULT_UI_PREFERENCES })
+        .eq('id', user.id);
+      queryClient.invalidateQueries({ queryKey: ['userProfile', user.id] });
+    }
+    toast.success('Display and accessibility settings reset to default.');
+  }, [user?.id, queryClient]);
+
   const lockSession = useCallback(() => {
     if (!profile?.pin && !profile?.biometric_credential_id) {
       toast.info('Set a 4-digit PIN or Biometrics in your profile to enable Quick Lock.');
@@ -397,7 +446,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [profile?.pin, profile?.name]
   );
 
-  // WebAuthn Device Biometrics (FaceID / TouchID / Android Fingerprint)
   const registerBiometrics = useCallback(async (): Promise<boolean> => {
     if (!user || !window.PublicKeyCredential) {
       toast.error('Biometric authentication is not supported on this browser/device.');
@@ -477,7 +525,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (assertion) {
         setIsLocked(false);
         localStorage.removeItem(LOCK_STORAGE_KEY);
-        toast.success(`Biometric unlock verified.`);
+        toast.success('Biometric unlock verified.');
         return true;
       }
       return false;
@@ -552,6 +600,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasPermission,
       checkAccess,
       updateUIPreferences,
+      resetUIPreferences,
       lockSession,
       unlockWithPin,
       unlockWithBiometrics,
@@ -569,6 +618,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       hasPermission,
       checkAccess,
       updateUIPreferences,
+      resetUIPreferences,
       lockSession,
       unlockWithPin,
       unlockWithBiometrics,

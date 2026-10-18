@@ -30,6 +30,7 @@ import {
   X,
   RotateCcw,
   Sparkles,
+  Eye,
 } from 'lucide-react';
 import { useAuth } from '../../lib/auth';
 import type { PermissionKey } from '../../lib/permissions';
@@ -527,6 +528,28 @@ export function Sidebar({ isOpen = true, onMobileClose }: SidebarProps) {
           ))}
 
           <div className="h-px bg-slate-800/50 mx-4 my-4" />
+
+          {/* Display & Comfort (Accessible to ALL Staff & Keepers on Mobile/Tablet/Desktop) */}
+          <Link
+            to="/accessibility"
+            onClick={handleNavClick}
+            title={!isOpen ? 'Display & Comfort' : undefined}
+            className={`flex items-center ${
+              isOpen ? 'gap-3 px-3' : 'justify-center px-0'
+            } py-2.5 mb-2 rounded-xl text-sm font-bold transition-all ${
+              location.pathname === '/accessibility'
+                ? 'bg-emerald-500/15 text-emerald-400'
+                : 'text-slate-400 hover:text-white hover:bg-slate-800/50'
+            }`}
+          >
+            <Eye
+              size={18}
+              className={`shrink-0 ${
+                location.pathname === '/accessibility' ? 'text-emerald-400' : 'text-emerald-500'
+              }`}
+            />
+            {isOpen && <span>Display &amp; Comfort</span>}
+          </Link>
 
           {!isMobile && hasPermission(['reports:view', 'admin:settings']) && (
             <Link
