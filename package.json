@@ -38,7 +38,8 @@
     "sonner": "^2.0.8",
     "tailwind-merge": "^3.6.0",
     "valibot": "^1.4.2",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "zxing-wasm": "^3.1.6"
   },
   "devDependencies": {
     "@tanstack/router-devtools": "^1.167.2",

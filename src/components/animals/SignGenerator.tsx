@@ -88,14 +88,37 @@ export function SignGenerator({ animal, onClose }: SignGeneratorProps) {
     networkMode: 'offlineFirst',
   });
 
-  // Dynamic dimension label based on category
+  // Dynamic dimension label based on category & species
   const dynamicDimensionLabel = useMemo(() => {
+    const s = (animal.species || '').toLowerCase();
     const c = (animal.category || '').toUpperCase();
-    if (c === 'INVERT' || c === 'ARACHNID') return 'LEG SPAN';
+    if (
+      c === 'INVERT' ||
+      c === 'ARACHNID' ||
+      s.includes('spider') ||
+      s.includes('tarantula') ||
+      s.includes('scorpion') ||
+      s.includes('invert') ||
+      s.includes('millipede')
+    ) {
+      return 'LEG SPAN';
+    }
     if (c === 'MAMMAL') return 'BODY LENGTH';
-    if (c === 'EXOTIC' || c === 'REPTILE') return 'TOTAL LENGTH';
+    if (
+      c === 'EXOTIC' ||
+      c === 'REPTILE' ||
+      s.includes('snake') ||
+      s.includes('lizard') ||
+      s.includes('python') ||
+      s.includes('boa') ||
+      s.includes('dragon') ||
+      s.includes('gecko') ||
+      s.includes('tortoise')
+    ) {
+      return 'TOTAL LENGTH';
+    }
     return 'WINGSPAN';
-  }, [animal.category]);
+  }, [animal.species, animal.category]);
 
   // Initial content state populated strictly from the animal's database record (zero mock data)
   const [content, setContent] = useState(() => ({
@@ -120,6 +143,7 @@ export function SignGenerator({ animal, onClose }: SignGeneratorProps) {
       const { data, error } = await supabase
         .from('species_signage_master')
         .select('*')
+        .eq('is_deleted', false)
         .ilike('species_name', animal.species.trim())
         .maybeSingle();
 
@@ -168,22 +192,51 @@ export function SignGenerator({ animal, onClose }: SignGeneratorProps) {
       return;
     }
 
+    const cleanSpecies = (animal.species || animal.name || '').trim();
+    if (!cleanSpecies) {
+      toast.error('Please enter a species name on this animal profile first.');
+      return;
+    }
+
     startTransition(async () => {
       try {
+        const payload = {
+          species: cleanSpecies,
+          latinName: (animal.latin_name || '').trim(),
+          category: (animal.category || 'OWL').trim(),
+          dimensionType: dynamicDimensionLabel,
+        };
+
         const { data, error } = await supabase.functions.invoke(
           'generate-signage',
           {
-            body: {
-              species: animal.species,
-              latinName: animal.latin_name,
-              category: animal.category,
-              dimensionType: dynamicDimensionLabel,
-            },
+            body: payload,
           }
         );
 
-        if (error) throw new Error(error.message);
-        if (!data) throw new Error('No data returned from AI engine.');
+        if (error) {
+          let detail = error.message;
+          try {
+            if ('context' in error && error.context) {
+              const errRes = (error.context as Response).clone();
+              const errBody = await errRes.json();
+              if (errBody?.error) {
+                detail = errBody.error;
+              }
+            }
+          } catch {
+            // Fallback to error.message if response body is not JSON
+          }
+          throw new Error(detail);
+        }
+
+        if (!data) {
+          throw new Error('No data returned from AI engine.');
+        }
+
+        if (data.error) {
+          throw new Error(String(data.error));
+        }
 
         const resolvedDimension =
           data.wingspan ||
@@ -231,6 +284,7 @@ export function SignGenerator({ animal, onClose }: SignGeneratorProps) {
         const message =
           err instanceof Error ? err.message : 'Generation failed.';
         toast.error(`Generation Failed: ${message}`);
+        console.error('[SignGenerator AI Error]:', err);
       }
     });
   };
@@ -238,7 +292,9 @@ export function SignGenerator({ animal, onClose }: SignGeneratorProps) {
   // Commit curator-verified numbers to the Institution Master Standard Table
   const handleSaveAsMaster = async () => {
     if (!animal.species?.trim()) {
-      toast.error('Animal record must have a species name to save a master standard.');
+      toast.error(
+        'Animal record must have a species name to save a master standard.'
+      );
       return;
     }
 
@@ -284,9 +340,7 @@ export function SignGenerator({ animal, onClose }: SignGeneratorProps) {
       toast.success(`Verified master standard saved for ${animal.species}!`);
     } catch (err: unknown) {
       const message =
-        err instanceof Error
-          ? err.message
-          : 'Failed to save master record.';
+        err instanceof Error ? err.message : 'Failed to save master record.';
       toast.error(message);
     } finally {
       setIsSavingMaster(false);

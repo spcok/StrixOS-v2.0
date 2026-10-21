@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Lock,
   Mail,
@@ -20,20 +20,40 @@ interface LoginScreenProps {
   onSuccess?: () => void;
 }
 
+const MAX_LOGIN_ATTEMPTS = 5;
+const LOCKOUT_SECONDS = 30;
+
 export function LoginScreen({ onSuccess }: LoginScreenProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
 
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [cooldownSeconds, setCooldownSeconds] = useState(0);
+
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
   const [resetEmail, setResetEmail] = useState('');
   const [isSendingReset, setIsSendingReset] = useState(false);
   const [resetSentSuccess, setResetSentSuccess] = useState(false);
 
+  useEffect(() => {
+    if (cooldownSeconds <= 0) return;
+    const timer = setInterval(() => {
+      setCooldownSeconds((prev) => Math.max(0, prev - 1));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [cooldownSeconds]);
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email.trim() || !password) {
+    if (cooldownSeconds > 0) {
+      toast.error(`Too many failed attempts. Please wait ${cooldownSeconds}s.`);
+      return;
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+    if (!normalizedEmail || !password) {
       toast.error('Please provide both your email address and password.');
       return;
     }
@@ -41,18 +61,44 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
     setIsLoggingIn(true);
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
+        email: normalizedEmail,
         password,
       });
       if (error) throw error;
       if (!data.session) throw new Error('No active session returned.');
 
+      // Verify staff account is active in public.users
+      const { data: staffRow } = await supabase
+        .from('users')
+        .select('is_active')
+        .eq('id', data.session.user.id)
+        .maybeSingle();
+
+      if (staffRow && staffRow.is_active === false) {
+        await supabase.auth.signOut();
+        throw new Error('Staff account is deactivated. Contact an administrator.');
+      }
+
+      setFailedAttempts(0);
+      setPassword('');
       toast.success('Signed in successfully.');
       if (onSuccess) onSuccess();
     } catch (err: unknown) {
-      const message =
-        err instanceof Error ? err.message : 'Invalid login credentials.';
-      toast.error(message);
+      const nextFailures = failedAttempts + 1;
+      setFailedAttempts(nextFailures);
+      if (nextFailures >= MAX_LOGIN_ATTEMPTS) {
+        setCooldownSeconds(LOCKOUT_SECONDS);
+        setFailedAttempts(0);
+        toast.error(
+          `Multiple failed sign-in attempts detected. Login locked for ${LOCKOUT_SECONDS} seconds.`
+        );
+      } else {
+        const message =
+          err instanceof Error && err.message.includes('deactivated')
+            ? err.message
+            : 'Invalid staff email or password.';
+        toast.error(message);
+      }
     } finally {
       setIsLoggingIn(false);
     }
@@ -60,7 +106,8 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
 
   const handleRequestPasswordReset = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!resetEmail.trim()) {
+    const normalizedResetEmail = resetEmail.trim().toLowerCase();
+    if (!normalizedResetEmail) {
       toast.error('Please enter your email address.');
       return;
     }
@@ -68,7 +115,7 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
     setIsSendingReset(true);
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(
-        resetEmail.trim(),
+        normalizedResetEmail,
         {
           redirectTo: `${window.location.origin}/reset-password`,
         }
@@ -77,13 +124,10 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
       if (error) throw error;
 
       setResetSentSuccess(true);
-      toast.success('Password recovery email dispatched.');
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : 'Failed to send reset link. Verify the email address.';
-      toast.error(message);
+      toast.success('If this email is registered, a recovery link has been dispatched.');
+    } catch {
+      // Prevent user enumeration by showing generic message or rate-limit notice
+      setResetSentSuccess(true);
     } finally {
       setIsSendingReset(false);
     }
@@ -138,10 +182,11 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
                   type="email"
                   required
                   autoComplete="email"
+                  disabled={cooldownSeconds > 0}
                   placeholder="keeper@kentowlacademy.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="w-full pl-10 pr-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-sm font-medium text-white placeholder:text-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 shadow-inner transition-all"
+                  className="w-full pl-10 pr-4 py-3 bg-slate-950 border border-slate-800 rounded-xl text-sm font-medium text-white placeholder:text-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 shadow-inner transition-all disabled:opacity-50"
                 />
               </div>
             </div>
@@ -172,10 +217,11 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
                   type={showPassword ? 'text' : 'password'}
                   required
                   autoComplete="current-password"
+                  disabled={cooldownSeconds > 0}
                   placeholder="••••••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  className="w-full pl-10 pr-10 py-3 bg-slate-950 border border-slate-800 rounded-xl text-sm font-medium text-white placeholder:text-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 shadow-inner transition-all"
+                  className="w-full pl-10 pr-10 py-3 bg-slate-950 border border-slate-800 rounded-xl text-sm font-medium text-white placeholder:text-slate-600 focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 shadow-inner transition-all disabled:opacity-50"
                 />
                 <button
                   type="button"
@@ -192,10 +238,12 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={isLoggingIn}
+              disabled={isLoggingIn || cooldownSeconds > 0}
               className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-sm font-bold transition-all shadow-md active:scale-[0.99] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 mt-4"
             >
-              {isLoggingIn ? (
+              {cooldownSeconds > 0 ? (
+                <span>Locked ({cooldownSeconds}s)</span>
+              ) : isLoggingIn ? (
                 <>
                   <Loader2 size={16} className="animate-spin" />
                   <span>Authenticating...</span>
@@ -263,9 +311,9 @@ export function LoginScreen({ onSuccess }: LoginScreenProps) {
                 className="shrink-0 mt-0.5 text-emerald-600"
               />
               <p className="text-xs font-medium leading-relaxed">
-                A recovery link has been dispatched to{' '}
-                <strong>{resetEmail}</strong>. Please check your inbox and tap
-                the link to reset your credentials.
+                If <strong>{resetEmail}</strong> is registered, a recovery link
+                has been dispatched. Please check your inbox and tap the link to
+                reset your credentials.
               </p>
             </div>
             <button

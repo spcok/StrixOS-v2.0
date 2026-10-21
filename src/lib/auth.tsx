@@ -15,6 +15,7 @@ import { supabase } from './supabase';
 
 const SECURITY_HEARTBEAT_TTL_MS = 72 * 60 * 60 * 1000; // 72-hour offline GDPR limit
 const IDLE_SOFT_LOCK_MS = 5 * 60 * 1000; // 5-minute shared tablet soft-lock
+const MAX_PIN_ATTEMPTS = 5;
 const HEARTBEAT_STORAGE_KEY = 'strixos_last_auth_heartbeat';
 const HEARTBEAT_CHECK_INTERVAL_MS = 60 * 1000;
 const AUTH_SESSION_KEY = 'strix-auth-session';
@@ -203,6 +204,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [isLocked, setIsLocked] = useState<boolean>(() => {
     return localStorage.getItem(LOCK_STORAGE_KEY) === 'true';
   });
+  const [failedPinAttempts, setFailedPinAttempts] = useState(0);
   const [uiPreferences, setUiPreferences] = useState<UIPreferences>(() =>
     readLocalUIPreferences()
   );
@@ -219,6 +221,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(null);
       setUser(null);
       setIsLocked(false);
+      setFailedPinAttempts(0);
 
       if (isExpired) {
         toast.error(
@@ -296,6 +299,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setSession(null);
         setUser(null);
         setIsLocked(false);
+        setFailedPinAttempts(0);
         await del(AUTH_SESSION_KEY);
         await del('strix-user-profile');
         localStorage.removeItem(HEARTBEAT_STORAGE_KEY);
@@ -336,6 +340,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const { data: rawPermissions = [] } = useQuery(
     getPermissionsQueryOptions(profile?.role, user?.id)
   );
+
+  // SECURITY GATE: Immediately eject deactivated / suspended staff accounts
+  useEffect(() => {
+    if (profile && profile.is_active === false) {
+      toast.error('Your staff account has been deactivated. Contact an administrator.');
+      logout(false);
+    }
+  }, [profile, logout]);
 
   // Sync user's personal Accessibility Preferences from Supabase + Local Device Storage
   useEffect(() => {
@@ -432,18 +444,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [user, isLocked, profile?.pin, profile?.biometric_credential_id]);
 
+  // HARDENED PIN UNLOCK: Prevents null-PIN bypass & enforces 5-strike brute-force sign-out
   const unlockWithPin = useCallback(
     (pinCode: string): boolean => {
-      if (!profile?.pin || pinCode.trim() === profile.pin.trim()) {
+      if (!profile?.pin) {
+        toast.error('No PIN configured for this account. Please unlock with Biometrics or Sign Out.');
+        return false;
+      }
+
+      if (pinCode.trim().length > 0 && pinCode.trim() === profile.pin.trim()) {
         setIsLocked(false);
+        setFailedPinAttempts(0);
         localStorage.removeItem(LOCK_STORAGE_KEY);
         toast.success(`Welcome back, ${profile?.name?.split(' ')[0] || 'Keeper'}`);
         return true;
       }
-      toast.error('Incorrect 4-digit PIN');
+
+      const nextAttempts = failedPinAttempts + 1;
+      setFailedPinAttempts(nextAttempts);
+
+      if (nextAttempts >= MAX_PIN_ATTEMPTS) {
+        toast.error('Too many failed PIN attempts. Session terminated for security.');
+        logout(false);
+        return false;
+      }
+
+      toast.error(
+        `Incorrect PIN (${MAX_PIN_ATTEMPTS - nextAttempts} attempt${
+          MAX_PIN_ATTEMPTS - nextAttempts === 1 ? '' : 's'
+        } remaining)`
+      );
       return false;
     },
-    [profile?.pin, profile?.name]
+    [profile?.pin, profile?.name, failedPinAttempts, logout]
   );
 
   const registerBiometrics = useCallback(async (): Promise<boolean> => {
@@ -524,6 +557,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       if (assertion) {
         setIsLocked(false);
+        setFailedPinAttempts(0);
         localStorage.removeItem(LOCK_STORAGE_KEY);
         toast.success('Biometric unlock verified.');
         return true;
@@ -546,13 +580,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return set;
   }, [rawPermissions]);
 
+  // HARDENED RBAC CHECK: Strictly trusts RLS-backed profile.role (never client-writable user_metadata)
   const hasPermission = useCallback(
     (permission: string | string[], showToastOnDenied = false): boolean => {
       if (isLocked) return false;
       if (profileStatus === 'pending') return false;
-      if (!profile && !session) return false;
+      if (!profile || profile.is_active === false) return false;
 
-      const normalizedRole = normalizeRole(profile?.role || session?.user?.user_metadata?.role);
+      const normalizedRole = normalizeRole(profile.role);
       const isRootRole = normalizedRole === 'ADMIN' || normalizedRole === 'DIRECTOR';
 
       if (isRootRole || activePermissionsSet.has('*')) return true;
@@ -574,12 +609,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       return allowed;
     },
-    [isLocked, profile, session, profileStatus, activePermissionsSet]
+    [isLocked, profile, profileStatus, activePermissionsSet]
   );
 
   const checkAccess = useCallback(
     (allowedRoles: string[]): boolean => {
-      if (isLocked || !profile) return false;
+      if (isLocked || !profile || profile.is_active === false) return false;
       const normalizedRole = normalizeRole(profile.role);
       if (normalizedRole === 'ADMIN' || normalizedRole === 'DIRECTOR') return true;
       return allowedRoles.map((r) => normalizeRole(r)).includes(normalizedRole);
